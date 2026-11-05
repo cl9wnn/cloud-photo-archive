@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloudphoto"
+version = "1.0.0"
+description = "Фотоархив в Yandex Object Storage"
+requires-python = ">=3.10"
+dependencies = ["boto3==1.43.123"]
+
+[project.scripts]
+cloudphoto = "cloudphoto:main"
+
+[tool.setuptools]
+py-modules = ["cloudphoto"]
