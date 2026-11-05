@@ -338,3 +338,50 @@ cat >> cloudphoto.py <<'PY'
                 if os.path.exists(temporary):
                     os.unlink(temporary)
 PY
+
+cat >> cloudphoto.py <<'PY'
+
+    def remove_keys(self, keys):
+        for offset in range(0, len(keys), 1000):
+            result = self.s3.delete_objects(
+                Bucket=self.bucket,
+                Delete={
+                    "Objects": [
+                        {"Key": key}
+                        for key in keys[offset:offset + 1000]
+                    ],
+                    "Quiet": True,
+                },
+            )
+
+            if result.get("Errors"):
+                first = result["Errors"][0]
+                raise Error(
+                    "Не удалось удалить объект: "
+                    + first.get("Code", "ошибка S3")
+                )
+
+    def delete(self, album, photo=None):
+        self.require_album(album)
+
+        if photo is not None:
+            key = photo_key(album, photo)
+
+            if not is_photo(photo) or not self.exists(key):
+                raise Error(
+                    f"В альбоме нет фотографии с именем {photo}"
+                )
+
+            self.s3.delete_object(Bucket=self.bucket, Key=key)
+            return
+
+        marker = marker_key(album)
+        keys = [
+            key
+            for key in self.keys(album_prefix(album))
+            if key != marker
+        ]
+
+        self.remove_keys(keys)
+        self.s3.delete_object(Bucket=self.bucket, Key=marker)
+PY
