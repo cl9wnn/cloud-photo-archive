@@ -74,68 +74,6 @@ def arguments(argv):
     return parser.parse_args(argv)
 
 
-def main(argv=None):
-    try:
-        if any(not os.environ.get(name) for name in ENV_NAMES):
-            raise Error("Не заданы переменные окружения")
-
-        args = arguments(argv)
-
-        if hasattr(args, "path") and not args.path:
-            raise Error("Ошибка в аргументах")
-
-        archive_class = globals().get("Archive")
-        method = "albums" if args.command == "list" else args.command
-
-        if archive_class is None or not hasattr(archive_class, method):
-            raise Error("Команда пока не реализована")
-
-        client = make_client(
-            os.environ["AWS_ACCESS_KEY_ID"],
-            os.environ["AWS_SECRET_ACCESS_KEY"],
-        )
-        archive = archive_class(client, os.environ["BUCKET"])
-
-        if args.command == "list":
-            names = (
-                archive.albums()
-                if args.album is None
-                else archive.photos(args.album)
-            )
-            for name in names:
-                print(name)
-
-        elif args.command in ("upload", "download"):
-            getattr(archive, args.command)(args.album, args.path)
-
-        elif args.command == "delete":
-            archive.delete(args.album, args.photo)
-
-        else:
-            archive.mksite()
-            print(f"https://{archive.bucket}/")
-
-        return 0
-
-    except (Exception, KeyboardInterrupt) as exc:
-        message = (
-            "Операция прервана"
-            if isinstance(exc, KeyboardInterrupt)
-            else str(exc)
-        )
-
-        for name in ENV_NAMES[1:]:
-            secret = os.environ.get(name)
-            if secret:
-                message = message.replace(secret, "[скрыто]")
-
-        print(message or "Ошибка выполнения программы", file=sys.stderr)
-        return 1
-PY
-
-cat >> cloudphoto.py <<'PY'
-
-
 def xml_content_md5(params, **kwargs):
     digest = hashlib.md5(params["body"], usedforsecurity=False).digest()
     params["headers"]["Content-MD5"] = base64.b64encode(digest).decode("ascii")
@@ -238,7 +176,9 @@ class Archive:
             return True
         except ClientError as exc:
             if exc.response["Error"]["Code"] in (
-                "404", "NoSuchKey", "NotFound"
+                "404",
+                "NoSuchKey",
+                "NotFound",
             ):
                 return False
             raise
@@ -264,18 +204,13 @@ class Archive:
 
         for key in self.keys(prefix):
             name = decode(key[len(prefix):])
-
             if not is_photo(name):
                 raise Error(
                     "В разделе фотографий обнаружен некорректный объект"
                 )
-
             names.append(name)
 
         return sorted_names(names)
-PY
-
-cat >> cloudphoto.py <<'PY'
 
     def upload(self, album, directory):
         directory = Path(directory)
@@ -291,6 +226,8 @@ cat >> cloudphoto.py <<'PY'
             raise Error("В каталоге нет фотографий")
 
         photos = sorted_names(photos)
+
+        # Проверяем имена и размер ключей до изменения бакета.
         pairs = [
             (name, photo_key(album, name))
             for name in photos
@@ -317,6 +254,7 @@ cat >> cloudphoto.py <<'PY'
         photos = self.photos(album)
         directory = Path(directory)
 
+        # Проверка записи нужна даже для пустого альбома.
         with tempfile.TemporaryFile(dir=directory):
             pass
 
@@ -337,11 +275,9 @@ cat >> cloudphoto.py <<'PY'
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
-PY
-
-cat >> cloudphoto.py <<'PY'
 
     def remove_keys(self, keys):
+        # DeleteObjects принимает не более 1000 ключей за запрос.
         for offset in range(0, len(keys), 1000):
             result = self.s3.delete_objects(
                 Bucket=self.bucket,
@@ -383,10 +319,9 @@ cat >> cloudphoto.py <<'PY'
         ]
 
         self.remove_keys(keys)
-        self.s3.delete_object(Bucket=self.bucket, Key=marker)
-PY
 
-cat >> cloudphoto.py <<'PY'
+        # Сохраняем маркер при частичной ошибке удаления фотографий.
+        self.s3.delete_object(Bucket=self.bucket, Key=marker)
 
     def put_html(self, key, document):
         self.s3.put_object(
@@ -475,6 +410,7 @@ def album_html(album, photos):
         '<p>Вернуться на <a href="index.html">'
         "главную страницу</a> фотоархива</p>"
     )
+
     head = ""
 
     if photos:
@@ -521,6 +457,65 @@ def album_html(album, photos):
     )
 
 
+def main(argv=None):
+    try:
+        if any(not os.environ.get(name) for name in ENV_NAMES):
+            raise Error("Не заданы переменные окружения")
+
+        args = arguments(argv)
+
+        if hasattr(args, "path") and not args.path:
+            raise Error("Ошибка в аргументах")
+
+        client = make_client(
+            os.environ["AWS_ACCESS_KEY_ID"],
+            os.environ["AWS_SECRET_ACCESS_KEY"],
+        )
+        archive = Archive(client, os.environ["BUCKET"])
+
+        if args.command == "list":
+            names = (
+                archive.albums()
+                if args.album is None
+                else archive.photos(args.album)
+            )
+            for name in names:
+                print(name)
+
+        elif args.command == "upload":
+            archive.upload(args.album, args.path)
+
+        elif args.command == "download":
+            archive.download(args.album, args.path)
+
+        elif args.command == "delete":
+            archive.delete(args.album, args.photo)
+
+        else:
+            archive.mksite()
+            print(f"https://{archive.bucket}/")
+
+        return 0
+
+    except (Exception, KeyboardInterrupt) as exc:
+        message = (
+            "Операция прервана"
+            if isinstance(exc, KeyboardInterrupt)
+            else str(exc)
+        )
+
+        # Не допускаем попадания ключей доступа в диагностику.
+        for name in ENV_NAMES[1:]:
+            secret = os.environ.get(name)
+            if secret:
+                message = message.replace(secret, "[скрыто]")
+
+        print(
+            message or "Ошибка выполнения программы",
+            file=sys.stderr,
+        )
+        return 1
+
+
 if __name__ == "__main__":
     sys.exit(main())
-PY
