@@ -274,3 +274,67 @@ class Archive:
 
         return sorted_names(names)
 PY
+
+cat >> cloudphoto.py <<'PY'
+
+    def upload(self, album, directory):
+        directory = Path(directory)
+
+        with os.scandir(directory) as entries:
+            photos = [
+                item.name
+                for item in entries
+                if is_photo(item.name) and item.is_file()
+            ]
+
+        if not photos:
+            raise Error("В каталоге нет фотографий")
+
+        photos = sorted_names(photos)
+        pairs = [
+            (name, photo_key(album, name))
+            for name in photos
+        ]
+
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=marker_key(album),
+            Body=b"",
+        )
+
+        for name, key in pairs:
+            self.s3.upload_file(
+                str(directory / name),
+                self.bucket,
+                key,
+                ExtraArgs={
+                    "ContentType": "image/jpeg",
+                    "CacheControl": "no-cache",
+                },
+            )
+
+    def download(self, album, directory):
+        photos = self.photos(album)
+        directory = Path(directory)
+
+        with tempfile.TemporaryFile(dir=directory):
+            pass
+
+        for name in photos:
+            fd, temporary = tempfile.mkstemp(
+                prefix=".cloudphoto-",
+                dir=directory,
+            )
+            os.close(fd)
+
+            try:
+                self.s3.download_file(
+                    self.bucket,
+                    photo_key(album, name),
+                    temporary,
+                )
+                os.replace(temporary, directory / name)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+PY
