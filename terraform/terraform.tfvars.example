@@ -1,0 +1,6 @@
+folder_id            = "ID каталога"
+bucket_name          = "photos.vvotNN.itiscl.ru"
+domain               = "vvotNN.itiscl.ru"
+cert_id              = "ID сертификата"
+dns_zone_id          = "photos.vvotNN.itiscl.ru"
+existing_dns_zone_id = "ID DNS зоны"
