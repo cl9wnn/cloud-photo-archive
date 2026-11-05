@@ -385,3 +385,142 @@ cat >> cloudphoto.py <<'PY'
         self.remove_keys(keys)
         self.s3.delete_object(Bucket=self.bucket, Key=marker)
 PY
+
+cat >> cloudphoto.py <<'PY'
+
+    def put_html(self, key, document):
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=document.encode("utf-8"),
+            ContentType="text/html; charset=utf-8",
+            CacheControl="no-cache",
+        )
+
+    def mksite(self):
+        self.s3.put_bucket_acl(
+            Bucket=self.bucket,
+            ACL="public-read",
+        )
+        self.s3.put_bucket_website(
+            Bucket=self.bucket,
+            WebsiteConfiguration=WEBSITE,
+        )
+
+        albums = self.albums()
+
+        old_pages = {
+            key
+            for key in self.keys("album")
+            if re.fullmatch(r"album[1-9][0-9]*\.html", key)
+        }
+
+        current_pages = set()
+        links = []
+
+        for number, album in enumerate(albums, 1):
+            page = f"album{number}.html"
+
+            self.put_html(
+                page,
+                album_html(album, self.photos(album)),
+            )
+
+            current_pages.add(page)
+            links.append(
+                f'<li><a href="{page}">'
+                f"{html.escape(album)}</a></li>"
+            )
+
+        self.put_html(
+            "error.html",
+            document(
+                "Фотоархив",
+                "<h1>Ошибка</h1>"
+                "<p>Ошибка при доступе к фотоархиву. "
+                'Вернитесь на <a href="index.html">'
+                "главную страницу</a> фотоархива.</p>",
+            ),
+        )
+
+        if albums:
+            content = "<ul>\n" + "\n".join(links) + "\n</ul>"
+        else:
+            content = "<p>Фотоархив пустой.</p>"
+
+        self.put_html(
+            "index.html",
+            document(
+                "Фотоархив",
+                "<h1>Фотоархив</h1>\n" + content,
+            ),
+        )
+
+        self.remove_keys(sorted(old_pages - current_pages))
+
+
+def document(title, body, extra_head=""):
+    return (
+        '<!doctype html>\n<html lang="ru">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        f"<title>{html.escape(title)}</title>\n"
+        f"{extra_head}\n</head>\n"
+        f"<body>\n{body}\n</body>\n</html>\n"
+    )
+
+
+def album_html(album, photos):
+    title = f'Фотоальбом "{album}"'
+    back = (
+        '<p>Вернуться на <a href="index.html">'
+        "главную страницу</a> фотоархива</p>"
+    )
+    head = ""
+
+    if photos:
+        base = "https://cdnjs.cloudflare.com/ajax/libs/galleria/1.6.1"
+
+        head = (
+            f'<link rel="stylesheet" '
+            f'href="{base}/themes/classic/galleria.classic.min.css">\n'
+            "<style>"
+            ".galleria{width:960px;height:540px;background:#000}"
+            "</style>\n"
+            '<script src="https://ajax.googleapis.com/ajax/libs/'
+            'jquery/3.6.0/jquery.min.js"></script>\n'
+            f'<script src="{base}/galleria.min.js"></script>\n'
+            f'<script src="{base}/themes/classic/'
+            'galleria.classic.min.js"></script>'
+        )
+
+        images = []
+
+        for photo in photos:
+            url = quote(photo_key(album, photo), safe="/")
+            images.append(
+                f'<img src="{html.escape(url, quote=True)}" '
+                f'data-title="{html.escape(photo, quote=True)}">'
+            )
+
+        content = (
+            '<div class="galleria">\n'
+            + "\n".join(images)
+            + "\n</div>"
+        )
+        content += (
+            back
+            + "\n<script>Galleria.run('.galleria');</script>"
+        )
+    else:
+        content = "<p>Фотоальбом пустой.</p>" + back
+
+    return document(
+        title,
+        f"<h1>{html.escape(title)}</h1>\n" + content,
+        head,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+PY
