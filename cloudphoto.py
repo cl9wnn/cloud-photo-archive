@@ -132,3 +132,145 @@ def main(argv=None):
         print(message or "Ошибка выполнения программы", file=sys.stderr)
         return 1
 PY
+
+cat >> cloudphoto.py <<'PY'
+
+
+def xml_content_md5(params, **kwargs):
+    digest = hashlib.md5(params["body"], usedforsecurity=False).digest()
+    params["headers"]["Content-MD5"] = base64.b64encode(digest).decode("ascii")
+
+    checksum = params["context"].get("checksum", {})
+    checksum.pop("request_algorithm", None)
+    checksum.pop("request_algorithm_header", None)
+
+
+def make_client(access_key, secret_key):
+    core = botocore.session.Session()
+    core.set_config_variable("config_file", os.devnull)
+    core.set_config_variable("credentials_file", os.devnull)
+    core.get_component("config_store").set_config_variable("profile", None)
+
+    session = boto3.session.Session(
+        botocore_session=core,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=REGION,
+    )
+
+    client = session.client(
+        "s3",
+        endpoint_url=ENDPOINT,
+        region_name=REGION,
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            connect_timeout=10,
+            read_timeout=60,
+            retries={"mode": "standard", "total_max_attempts": 3},
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
+    )
+
+    for operation in ("DeleteObjects", "PutBucketWebsite"):
+        client.meta.events.register(
+            f"before-call.s3.{operation}",
+            xml_content_md5,
+        )
+
+    return client
+
+
+def encode(value):
+    return valid_name(value).encode("utf-8").hex()
+
+
+def decode(value):
+    try:
+        if not re.fullmatch(r"(?:[0-9a-f]{2})+", value):
+            raise ValueError()
+        return valid_name(bytes.fromhex(value).decode("utf-8"))
+    except (ValueError, UnicodeError):
+        raise Error("Повреждён ключ объекта фотоархива") from None
+
+
+def checked_key(value):
+    if len(value.encode("utf-8")) > 1024:
+        raise Error("Слишком длинное имя: ключ объекта превышает 1024 байта")
+    return value
+
+
+def album_prefix(album):
+    return checked_key(f"albums/{encode(album)}/")
+
+
+def marker_key(album):
+    return checked_key(album_prefix(album) + "marker")
+
+
+def photo_key(album, photo):
+    return checked_key(album_prefix(album) + "photos/" + encode(photo))
+
+
+def is_photo(name):
+    return name.lower().endswith((".jpg", ".jpeg"))
+
+
+def sorted_names(names):
+    return sorted(names, key=lambda value: value.encode("utf-8"))
+
+
+class Archive:
+    def __init__(self, client, bucket):
+        self.s3 = client
+        self.bucket = bucket
+
+    def keys(self, prefix=""):
+        paginator = self.s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            for item in page.get("Contents", []):
+                yield item["Key"]
+
+    def exists(self, key):
+        try:
+            self.s3.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] in (
+                "404", "NoSuchKey", "NotFound"
+            ):
+                return False
+            raise
+
+    def require_album(self, album):
+        if not self.exists(marker_key(album)):
+            raise Error(f"В фотоархиве нет альбома с именем {album}")
+
+    def albums(self):
+        names = []
+
+        for key in self.keys("albums/"):
+            parts = key.split("/")
+            if len(parts) == 3 and parts[2] == "marker":
+                names.append(decode(parts[1]))
+
+        return sorted_names(names)
+
+    def photos(self, album):
+        self.require_album(album)
+        prefix = album_prefix(album) + "photos/"
+        names = []
+
+        for key in self.keys(prefix):
+            name = decode(key[len(prefix):])
+
+            if not is_photo(name):
+                raise Error(
+                    "В разделе фотографий обнаружен некорректный объект"
+                )
+
+            names.append(name)
+
+        return sorted_names(names)
+PY
